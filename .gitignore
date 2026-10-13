@@ -1,0 +1,14 @@
+# virtual env
+.venv/
+venv/
+
+# python
+__pycache__/
+*.pyc
+
+# runtime state
+potter.db
+hello_world.pdf
+
+# os
+.DS_Store
