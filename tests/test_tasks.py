@@ -3,6 +3,7 @@ import time
 
 import pytest
 import requests
+from pypdf import PdfReader
 from sqlmodel import Session
 
 import tasks
@@ -15,7 +16,28 @@ class FakeResponse:
         pass
 
     def json(self):
-        return [{"name": "Gryffindor"}, {"name": "Ravenclaw"}]
+        return [
+            {
+                "name": "Gryffindor",
+                "houseColours": "Scarlet and gold",
+                "founder": "Godric Gryffindor",
+                "animal": "Lion",
+                "element": "Fire",
+                "ghost": "Nearly-Headless Nick",
+                "commonRoom": "Gryffindor Tower",
+                "traits": [{"name": "Courage"}, {"name": "Bravery"}],
+            },
+            {
+                "name": "Ravenclaw",
+                "houseColours": "Blue and bronze",
+                "founder": "Rowena Ravenclaw",
+                "animal": "Eagle",
+                "element": "Air",
+                "ghost": "The Grey Lady",
+                "commonRoom": "Ravenclaw Tower",
+                "traits": [{"name": "Wit"}, {"name": "Learning"}],
+            },
+        ]
 
 
 def make_job() -> int:
@@ -44,6 +66,9 @@ def test_task_writes_pdf_and_completes(monkeypatch):
     pdf_path = OUTPUT_DIR / job.filename
     assert pdf_path.is_file()
     assert pdf_path.read_bytes().startswith(b"%PDF")
+    text = PdfReader(pdf_path).pages[0].extract_text()
+    assert "GRYFFINDOR" in text
+    assert "Godric Gryffindor" in text
 
 
 def test_task_marks_job_failed_when_api_is_down(monkeypatch):

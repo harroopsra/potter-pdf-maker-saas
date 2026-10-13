@@ -1,10 +1,11 @@
 # 🧙 potter-pdf-maker-saas
 
 [![CI](https://github.com/harroopsra/potter-pdf-maker-saas/actions/workflows/ci.yml/badge.svg)](https://github.com/harroopsra/potter-pdf-maker-saas/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A tiny "SaaS" that generates a PDF naming a random Hogwarts house — built as a learning project to understand how real job-queue architectures work: an API accepts a request, hands the heavy work to a background worker, and the client polls until the result is ready.
 
-**Example output:** [`examples/example_output.pdf`](examples/example_output.pdf) — a one-page PDF with a randomly chosen house (deliberately minimal: a house name in plain Helvetica).
+**Example output:** [`examples/example_output.pdf`](examples/example_output.pdf) — a Sorting certificate-style page: a school crest at the top, the house name in a banner of house colours, house details and traits, a quote from the Sorting Hat's song, and a footer with the date. Regenerate it with `python scripts/generate_example.py`.
 
 ## Why this project exists
 
@@ -14,7 +15,7 @@ I wanted to demystify the "submit a job → wait → download the result" patter
 - **Celery + Redis** — pushing work to a background task queue instead of blocking the request
 - **The polling pattern** — the client keeps asking "is it done yet?" instead of holding the connection open
 - **SQLModel + SQLite** — persisting job state so status survives across processes
-- **fpdf2** — generating a PDF in Python
+- **fpdf2** — laying out a polished PDF: vector-drawn crest, house-colour banner and swatches, a quote box, and typography (plus swapping cp1252 into core fonts for proper em dashes)
 - **Consuming a real public API** — house data comes from the [Wizard World API](https://wizard-world-api.herokuapp.com/Houses)
 - **Tests & CI** — a pytest suite with the broker and network mocked out, run by GitHub Actions on every push
 
@@ -103,10 +104,13 @@ Everything is overridable via environment variables:
 ```
 config.py          environment-driven configuration
 models.py          SQLModel Job table + SQLite engine
+report.py          the sorting certificate PDF builder
 tasks.py           Celery app + the task: fetch house, build PDF
 main.py            FastAPI app: enqueue job, poll status, serve file
 tests/             pytest suite (broker + network mocked)
+scripts/           helper to regenerate the example PDF
 examples/          example of the generated PDF
+LICENSE            MIT
 ```
 
 ## Tests
@@ -117,11 +121,16 @@ pytest               # runs the whole suite; no Redis or network needed
 ruff check .         # lint
 ```
 
-The tests stub out the Celery broker and the Wizard World API, so they run anywhere — including the GitHub Actions CI workflow that runs on every push.
+The tests stub out the Celery broker and the Wizard World API, so they run anywhere — including the GitHub Actions CI workflow that runs on every push. PDF output is checked with `pypdf` text extraction (house name, founder, quote, date), not just "a file appeared".
 
 ## Notes & known limitations
 
 - The worker's `time.sleep(WORK_SECONDS)` is intentional — it stands in for genuinely slow work (video encoding, report rendering) so the polling pattern has something to poll for.
 - If the Wizard World API is unreachable, the task marks the job `FAILED` and re-raises, so the worker logs the error.
 - SQLite is used for simplicity; a real deployment would use Postgres and run the API/worker as separate services.
-- The generated PDF is intentionally bare-bones (just the house name) — the interesting part of this project is the architecture, not the typography.
+- The crest on each report is original vector art drawn at fixed page coordinates (so it lands in exactly the same place every time). To use your own artwork instead, drop an image at `assets/hogwarts_logo.png` and it takes over that slot — only use artwork you have the rights to, since official Harry Potter imagery is copyrighted.
+- Quotes are short excerpts from the Sorting Hat's song and Dumbledore, attributed on the PDF.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
