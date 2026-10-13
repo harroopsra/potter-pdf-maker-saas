@@ -1,8 +1,10 @@
 # 🧙 potter-pdf-maker-saas
 
+[![CI](https://github.com/harroopsra/potter-pdf-maker-saas/actions/workflows/ci.yml/badge.svg)](https://github.com/harroopsra/potter-pdf-maker-saas/actions/workflows/ci.yml)
+
 A tiny "SaaS" that generates a PDF naming a random Hogwarts house — built as a learning project to understand how real job-queue architectures work: an API accepts a request, hands the heavy work to a background worker, and the client polls until the result is ready.
 
-**Example output:** [`examples/example_output.pdf`](examples/example_output.pdf) — a one-page PDF with a randomly chosen house (in this run: a house name in plain Helvetica — deliberately minimal).
+**Example output:** [`examples/example_output.pdf`](examples/example_output.pdf) — a one-page PDF with a randomly chosen house (deliberately minimal: a house name in plain Helvetica).
 
 ## Why this project exists
 
@@ -14,20 +16,21 @@ I wanted to demystify the "submit a job → wait → download the result" patter
 - **SQLModel + SQLite** — persisting job state so status survives across processes
 - **fpdf2** — generating a PDF in Python
 - **Consuming a real public API** — house data comes from the [Wizard World API](https://wizard-world-api.herokuapp.com/Houses)
+- **Tests & CI** — a pytest suite with the broker and network mocked out, run by GitHub Actions on every push
 
 ## How it works
 
 ```
-client          FastAPI (main.py)       Redis broker        Celery worker (celery_stuff.py)      SQLite (potter.db)
+client          FastAPI (main.py)       Redis broker        Celery worker (tasks.py)             SQLite (potter.db)
   │                   │                      │                       │                              │
-  │ POST /make_pdf ──▶│ create Job ────────────────────────────────────────────────────────────────▶│ status=STARTED
+  │ POST /make_pdf ──▶│ create Job ────────────────────────────────────────────────────────────────▶│ status=QUEUED
   │                   │ enqueue task ───────▶│ ──▶ task picked up ──▶│ status=PROCESSING ───────────▶│
-  │◀── {task_id} ─────│                      │                       │ sleep 30s (simulated work)    │
+  │◀── {task_id} ─────│                      │                       │ sleep WORK_SECONDS            │
   │                   │                      │                       │ fetch house from Wizard World │
   │ GET /jobs?id=… ──▶│ ◀────────────────────────────────────────── status query ──────────────────│
-  │◀── {status} ──────│                      │                       │ write hello_world.pdf         │
+  │◀── {status} ──────│                      │                       │ write potter_report_<id>.pdf  │
   │                   │                      │                       │ status=COMPLETED ────────────▶│
-  │ GET /files?fname=hello_world.pdf ───────▶│ (FileResponse serves the PDF)                        │
+  │ GET /files?fname=potter_report_1.pdf ───▶│ (FileResponse serves the PDF)                        │
 ```
 
 ## Running it yourself
@@ -42,7 +45,7 @@ cd potter-pdf-maker-saas
 # 2. create an environment and install dependencies
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt        # add -r requirements-dev.txt for tests & linting
 
 # 3. start Redis (either way works)
 brew services start redis        # macOS via Homebrew
@@ -50,14 +53,14 @@ brew services start redis        # macOS via Homebrew
 # or: redis-server               # foreground, in its own terminal
 ```
 
-Then start three processes (each in its own terminal, venv activated):
+Then start two processes (each in its own terminal, venv activated):
 
 ```bash
 # terminal 1 — the web API
 uvicorn main:backend_app --reload
 
 # terminal 2 — the background worker
-celery -A celery_stuff.celery_app worker --loglevel=info
+celery -A tasks.celery_app worker --loglevel=info
 ```
 
 ## Using the API
@@ -67,35 +70,58 @@ celery -A celery_stuff.celery_app worker --loglevel=info
 curl -X POST localhost:8000/make_pdf
 # → {"message":"Started the task","task_id":1}
 
-# 2. poll until done (the worker sleeps 30s on purpose, to make you feel the async-ness)
+# 2. poll until done (the worker sleeps WORK_SECONDS=30 on purpose, to make you feel the async-ness)
 curl "localhost:8000/jobs?job_id=1"
-# → {"task_id":"1","status":"PROCESSING"}   … eventually …
-# → {"task_id":"1","status":"COMPLETED at hello_world.pdf"}
+# → {"task_id":1,"status":"PROCESSING","filename":null}   … eventually …
+# → {"task_id":1,"status":"COMPLETED","filename":"potter_report_1.pdf"}
 
-# 3. download the PDF (written to the project root)
-curl -OJ "localhost:8000/files?fname=hello_world.pdf"
+# 3. download the PDF
+curl -OJ "localhost:8000/files?fname=potter_report_1.pdf"
 ```
 
 ## API reference
 
-| Method | Path       | Params              | Returns                                              |
-|--------|------------|---------------------|------------------------------------------------------|
-| POST   | `/make_pdf`| —                   | `{message, task_id}` — job enqueued                  |
-| GET    | `/jobs`    | `job_id`            | `{task_id, status}` — `STARTED` / `PROCESSING` / `COMPLETED at hello_world.pdf` |
-| GET    | `/files`   | `fname`             | The generated PDF as an attachment                   |
+| Method | Path       | Params  | Returns                                                                 |
+|--------|------------|---------|-------------------------------------------------------------------------|
+| POST   | `/make_pdf`| —       | `{message, task_id}` — job enqueued                                     |
+| GET    | `/jobs`    | `job_id`| `{task_id, status, filename}` — status is `QUEUED` / `PROCESSING` / `COMPLETED` / `FAILED` |
+| GET    | `/files`   | `fname` | The generated PDF as an attachment (404 for anything outside the output directory) |
+
+## Configuration
+
+Everything is overridable via environment variables:
+
+| Variable            | Default                    | Purpose                              |
+|---------------------|----------------------------|--------------------------------------|
+| `DATABASE_URL`      | `sqlite:///potter.db`      | SQLModel database connection         |
+| `CELERY_BROKER_URL` | `redis://localhost:6379/0` | Celery message broker                |
+| `OUTPUT_DIR`        | project root               | Where generated PDFs are written     |
+| `WORK_SECONDS`      | `30`                       | Simulated work duration in the task  |
 
 ## Project layout
 
 ```
-main.py          FastAPI app: enqueue job, poll status, serve file
-celery_stuff.py  Celery app + the task: fetch house, build PDF
-db_stuff.py      SQLModel Job table + SQLite engine
-examples/        example of the generated PDF
+config.py          environment-driven configuration
+models.py          SQLModel Job table + SQLite engine
+tasks.py           Celery app + the task: fetch house, build PDF
+main.py            FastAPI app: enqueue job, poll status, serve file
+tests/             pytest suite (broker + network mocked)
+examples/          example of the generated PDF
 ```
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest               # runs the whole suite; no Redis or network needed
+ruff check .         # lint
+```
+
+The tests stub out the Celery broker and the Wizard World API, so they run anywhere — including the GitHub Actions CI workflow that runs on every push.
 
 ## Notes & known limitations
 
-- The worker's `time.sleep(30)` is intentional — it stands in for genuinely slow work (video encoding, report rendering) so the polling pattern has something to poll for.
+- The worker's `time.sleep(WORK_SECONDS)` is intentional — it stands in for genuinely slow work (video encoding, report rendering) so the polling pattern has something to poll for.
+- If the Wizard World API is unreachable, the task marks the job `FAILED` and re-raises, so the worker logs the error.
 - SQLite is used for simplicity; a real deployment would use Postgres and run the API/worker as separate services.
-- House data is fetched live from the Wizard World API at job time; if the API is unreachable the task fails and the job status won't reach `COMPLETED`.
 - The generated PDF is intentionally bare-bones (just the house name) — the interesting part of this project is the architecture, not the typography.
